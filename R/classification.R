@@ -1,14 +1,17 @@
+# classification.R
+# Classification metrics
+
+
 #' Area under the ROC curve
 #'
 #' Returns the area under the ROC curve based on comparing the predicted scores to the actual binary values. Tied predictions are handled by calculating the optimistic AUC (positive cases sorted first, resulting in higher AUC) and the pessimistic AUC (positive cases sorted last, resulting in lower AUC) and then returning the average of the two. For the ROC, a "tie" means at least one pair of `pred` predictions whose value is identical yet their corresponding values of `actual` are different. (If the value of `actual` are the same for identical predictions, then these are unproblematic and are not considered "ties".)
 #'
 #' @export
-#' @rdname class-error
 #'
-#' @param actual any atomic vector. Actual label values from a dataset. They must be binary; that is, there must be exactly two distinct values (other than missing values, which are allowed). The "true" or "positive" class is determined by coercing `actual` to logical `TRUE` and `FALSE` following the rules of [as.logical()]. If this is not the intended meaning of "positive", then specify which of the two values should be considered `TRUE` with the argument `binary_true_value`.
+#' @param actual any atomic vector. Actual label values from a dataset. They must be binary; that is, there must be exactly two distinct values (other than missing values, which are allowed). The "true" or "positive" class is determined by coercing `actual` to logical `TRUE` and `FALSE` following the rules of [as.logical()]. If this is not the intended meaning of "positive", then specify which of the two values should be considered `TRUE` with the argument `positive`.
 #' @param pred numeric vector. Predictions corresponding to each respective element in `actual`. Any numeric value (not only probabilities) are permissible.
 #' @param na.rm logical(1). `TRUE` if missing values should be removed; `FALSE` if they should be retained. If `TRUE`, then if any element of either `actual` or `pred` is missing, its paired element will be also removed.
-#' @param binary_true_value any single atomic value. The value of `actual` that is considered `TRUE`; any other value of `actual` is considered `FALSE`. For example, if `2` means `TRUE` and `1` means `FALSE`, then set `binary_true_value = 2`.
+#' @param positive any single atomic value. The value of `actual` that is considered `TRUE`; any other value of `actual` is considered `FALSE`. For example, if `2` means `TRUE` and `1` means `FALSE`, then set `positive = 2`.
 #' @param sample_size single positive integer. To keep the computation relatively rapid, when `actual` and `pred` are longer than `sample_size` elements, then a random sample of `sample_size` of `actual` and `pred` will be selected and the ROC and AUC will be calculated on this sample. To disable random sampling for long inputs, set `sample_size = NA`.
 #' @param seed numeric(1). Random seed used only if `length(actual) > sample_size`.
 #'
@@ -37,13 +40,13 @@ aucroc <- function(
     actual,
     pred,
     na.rm = FALSE,
-    binary_true_value = NULL,
+    positive = NULL,
     sample_size = 10000,
     seed = 0
   )
 {
   # Validate inputs
-  validate(is.null(binary_true_value) || rlang::is_scalar_atomic(binary_true_value))
+  validate(is.null(positive) || rlang::is_scalar_atomic(positive))
   validate(is.vector(actual))
   # pred can be any number, not only a probability
   validate(is.numeric(pred))
@@ -54,9 +57,9 @@ aucroc <- function(
   validate(is_scalar_natural(sample_size))
   validate(is.numeric(seed))
 
-  if (!is.null(binary_true_value)) {
-    # If binary_true_value is provided, then it overrides any other values of actual
-    actual <- actual == binary_true_value
+  if (!is.null(positive)) {
+    # If positive is provided, then it overrides any other values of actual
+    actual <- actual == positive
   }
   else {
     # Coerce actual to binary using the standard as.logical() rules
@@ -195,4 +198,119 @@ aucroc <- function(
 
 }
 
+
+#' Area under the ROC curve for regression target outcomes
+#'
+#' Area under the ROC curve (AUCROC) is a classification measure. By dichotomizing the range of `actual` values, `reg_aucroc()` turns regression evaluation into classification evaluation for any regression model. Note that the model that generates the predictions is assumed to be a regression model; however, any numeric inputs are allowed for the `pred` argument, so there is no check for the nature of the source model.
+#'
+#' The ROC data and AUCROC values are calculated with `aucroc()`.
+#'
+#' @export
+#'
+#' @param actual numeric vector. Actual label values from a dataset. They must be numeric.
+#' @param pred numeric vector. Predictions corresponding to each respective element in `actual`.
+#' @param num_quants scalar positive integer. If `cuts` is `NULL` (default), `actual` will be dichotomized into `quants` quantiles and that many ROCs will be returned in the `rocs` element. However, if `cuts` is specified, then `quants` is ignored.
+#' @param ... Not used. Forces explicit naming of the arguments that follow.
+#' @param cuts numeric vector. If `cuts` is provided, it overrides `quants` to specify the cut points for dichotomization of `actual` for the creation of `cuts + 1` ROCs.
+#' @param imbalance numeric(1) in (0, 0.5]. The result element `mean_auc` averages the AUCs over three regions (see details of the return value). `imbalance` is the supposed percentage of the less frequent class in the data. If not provided, defaults to 0.05 (5%).
+#' @param na.rm See documentation for `aucroc()`
+#' @param sample_size See documentation for `aucroc()`. In addition to those notes, for `reg_aucroc()`, any sampling is conducted before the dichotomization of `actual` so that all classification ROCs are based on identical data.
+#' @param seed See documentation for `aucroc()`
+#'
+#' @returns List with the following elements:
+#' * `rocs`: List of results for `aucroc()` for each dichotomized segment of `actual`.
+#' * `auc`: named numeric vector of AUC extracted from each element of `rocs`. Named by the percentile that the AUC represents.
+#' * `mean_auc`: named numeric(3). The average AUC over the low, middle, and high quantiles of dichotomization:
+#' * `lo`: average AUC with `imbalance`% (e.g., 5%) or less of the actual target values;
+#' * `mid`: average AUC in between `lo` and `hi`;
+#' * `hi`: average AUC with (1 - `imbalance`)% (e.g., 95%) or more of the actual target values;
+#'
+#' @examples
+#' # Remove rows with missing values from airquality dataset
+#' airq <- airquality |>
+#'   na.omit()
+#'
+#' # Create binary version where the target variable 'Ozone' is dichotomized based on its median
+#' airq_bin <- airq
+#' airq_bin$Ozone <- airq_bin$Ozone >= median(airq_bin$Ozone)
+#'
+#' # Create a generic regression model; use autogam
+#' req_aq   <- autogam::autogam(airq, 'Ozone', family = gaussian())
+#' req_aq$perf$sa_wmae_mad  # Standardized accuracy for regression
+#'
+#' # Create a generic classification model; use autogam
+#' class_aq <- autogam::autogam(airq_bin, 'Ozone', family = binomial())
+#' class_aq$perf$auc  # AUC (standardized accuracy for classification)
+#'
+#' # Compute AUC for regression predictions
+#' reg_auc_aq <- reg_aucroc(
+#'   airq$Ozone,
+#'   predict(req_aq)
+#' )
+#'
+#' # Average AUC over the lo, mid, and hi quantiles of dichotomization:
+#' reg_auc_aq$mean_auc
+#'
+#'
+reg_aucroc <- function(
+    actual,
+    pred,
+    num_quants = 100,
+    ...,
+    cuts = NULL,
+    imbalance = 0.05,
+    na.rm = FALSE,
+    sample_size = 10000,
+    seed = 0
+)
+{
+  # Validate inputs
+  validate(is.numeric(actual))
+  validate(is.numeric(pred))
+
+  len <- length(actual)
+  validate(len == length(pred))
+
+
+  # If len < quants, adjust number of quants to len - 1
+  num_quants <- min(num_quants, len + 1)
+
+  quants <- stats::quantile(
+    actual,
+    probs = seq(min(actual), max(actual), length.out = num_quants) |>
+      scale(min(actual), max(actual) - min(actual))
+    )
+
+  rocs <- quants[-c(1, num_quants)] |>  # skip the first and last elements
+    map(\(it.quant) {
+      aucroc(
+        actual >= it.quant,
+        pred,
+        na.rm = na.rm, sample_size = sample_size, seed = seed
+      )
+    })
+
+  auc <- rocs |>
+    purrr::map_dbl(\(it.roc) it.roc$auc)
+  auc_quants <- names(auc) |>
+    stringr::str_sub(end = -2) |>
+    as.numeric()
+
+  mean_auc <- c(
+    lo  = auc[auc_quants <= (imbalance * 100)] |>
+      mean(),
+    mid = auc[(imbalance * 100) < auc_quants & auc_quants < (100 - imbalance * 100)] |>
+      mean(),
+    hi  = auc[auc_quants >= (100 - imbalance * 100)] |>
+      mean()
+  )
+
+  return(list(
+    rocs = rocs,
+    auc = auc,
+    quants = auc_quants,
+    mean_auc = mean_auc
+  ))
+
+}
 
